@@ -4,12 +4,19 @@
 #include <Wire.h>
 #include <Timer.h>
 #include <SoftwareSerial.h>
+#include <Arduino.h>
+#include <ESP8266WebServer.h>
+#include <ESP8266WiFi.h>
 
 #define PUMP_PIN D7
+
+const char* ssid="FRITZ!Box 7590 ZR";
+const char* pass="ELATANT117DUUSIMAUM";
 
 Adafruit_SSD1306 display(128, 64, &Wire, -1);
 SoftwareSerial mySerial(D5, D6);
 Timer t;
+ESP8266WebServer server(80);
 
 
 // set to true/false when using another type of reed sensor
@@ -208,10 +215,28 @@ void setup() {
   display.setTextColor(WHITE);
   display.display();
   mySerial.write(0x11);
+
+  WiFi.begin(ssid, pass);
+  while (WiFi.status() != WL_CONNECTED){
+    delay(500);
+    Serial.println(".");
+  }
+  server.begin();
+
+  server.on("/", HTTP_GET, [](){
+    server.send(200, "text/plain", "Server available");
+  });
+
+  //Print IP Adress
+  Serial.print("Use this URL to connect: ");
+  Serial.print("http://");
+  Serial.print(WiFi.localIP());
+  Serial.println("/");
 }
 
 void loop() {
   t.update();
   detectChanges();
   getMachineInput();
+  server.handleClient();
 }
