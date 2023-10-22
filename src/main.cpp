@@ -1,242 +1,304 @@
-#include <Adafruit_SSD1306.h>
-#include <Adafruit_GFX.h>
-#include <ESP8266WiFi.h>
-#include <Wire.h>
-#include <Timer.h>
+//Includes
 #include <SoftwareSerial.h>
-#include <Arduino.h>
-#include <ESP8266WebServer.h>
 #include <ESP8266WiFi.h>
+#include <ArduinoHttpClient.h>
+#include "secrets.h"
+#include <SPI.h>
+#include <Adafruit_GFX.h>
+#include <Adafruit_SSD1306.h>
+#include <Wire.h>
 
-#define PUMP_PIN D7
+//Defines
+#define SCREEN_WIDTH    128     //Width in px 
+#define SCREEN_HEIGHT   64      // Height in px
+#define OLED_RESET      -1
+#define SCREEN_ADDRESS  0x3C    // or 0x3D Check datasheet or Oled Display
+#define BUFFER_SIZE     32
 
-const char* ssid="FRITZ!Box 7590 ZR";
-const char* pass="ELATANT117DUUSIMAUM";
+//function prototypes
+void updateView(int hxTemp, int steamTemp, int pumpState, int heatState, String mode);
+void scrollText();
 
-Adafruit_SSD1306 display(128, 64, &Wire, -1);
+
+//Secrets from secrets.h
+//Will not be pushed into the repo you have to create the file by yourself
+String ssid = WLAN_SSID;
+String pass = WLAN_PASS;
+String apiKey = API_KEY;
+String pushServiceHost = "pushsafer.com";
+int pushServicePort = 80;
+
+//Instances
+WiFiClient wifi;
+HttpClient client = HttpClient(wifi, pushServiceHost, pushServicePort);
+Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, OLED_RESET);
+//orange PIN 4 Mara TX to Arduino RX D5
+//black  PIN 3 Mara RX to Arduino TX D6
 SoftwareSerial mySerial(D5, D6);
-Timer t;
-ESP8266WebServer server(80);
 
 
-// set to true/false when using another type of reed sensor
-bool reedOpenSensor = true;
-bool displayOn = true;
-int timerCount = 0;
-int prevTimerCount = 0;
-bool timerStarted = false;
-long timerStartMillis = 0;
-long timerStopMillis = 0;
-long timerDisplayOffMillis = 0;
-long serialUpdateMillis = 0;
-int pumpInValue = 0;
+//Internals
+long lastMillis;
+int seconds = 0;
+int lastSeconds = 0;
+long serialTimeout = 0;
+char buffer[BUFFER_SIZE];
+int length = 0;
 
-const byte numChars = 32;
-char receivedChars[numChars];
-static byte ndx = 0;
-char endMarker = '\n';
-char rc;
+bool initialPushSent = false;
+String pushTitle = "Lelit%20Mara%20X";
+String pushMessage = "I%20am%20hot%20for%20you!";
+String pushIcon= "62";
+
+//Mara Data
+struct MaraData {
+  bool updated = false;
+  String mode;
+  String firmware;
+  int hxTemp;
+  int steamTemp;
+  int targetSteamTemp;
+  int boostCountdown;
+  int pumpState;
+  int heatState;
+};
 
 
-
-void getMachineInput() {
-  while (mySerial.available() ) {
-    serialUpdateMillis = millis();
-    rc = mySerial.read();
-
-    if (rc != endMarker) {
-      receivedChars[ndx] = rc;
-      ndx++;
-      if (ndx >= numChars) {
-        ndx = numChars - 1;
-      }
-    } else {
-      receivedChars[ndx] = '\0';
-      ndx = 0;
-      Serial.println(receivedChars);
-    }
-  }
-
-  if (millis() - serialUpdateMillis > 5000) {
-    serialUpdateMillis = millis();
-    memset(receivedChars, 0, numChars);
-    Serial.println("Request serial update");
-    mySerial.write(0x11);
-  }
-}
-
-void detectChanges() {
-  digitalWrite(LED_BUILTIN, digitalRead(PUMP_PIN));
-  if(reedOpenSensor) {
-    pumpInValue = digitalRead(PUMP_PIN);
-  } else {
-    pumpInValue = !digitalRead(PUMP_PIN);
-  }
-  if (!timerStarted && !pumpInValue) {
-    timerStartMillis = millis();
-    timerStarted = true;
-    displayOn = true;
-    Serial.println("Start pump");
-  }
-  if (timerStarted && pumpInValue) {
-    if (timerStopMillis == 0) {
-      timerStopMillis = millis();
-    }
-    if (millis() - timerStopMillis > 500) {
-      timerStarted = false;
-      timerStopMillis = 0;
-      timerDisplayOffMillis = millis();
-      display.invertDisplay(false);
-      Serial.println("Stop pump");
-    }
-  } else {
-    timerStopMillis = 0;
-  }
-  if (!timerStarted && displayOn && timerDisplayOffMillis >= 0 && (millis() - timerDisplayOffMillis > 1000 * 60 * 60)) {
-    timerDisplayOffMillis = 0;
-    timerCount = 0;
-    prevTimerCount = 0;
-    displayOn = false;
-    Serial.println("Sleep");
-  }
-}
-
-String getTimer() {
-  char outMin[2];
-  if (timerStarted) {
-    timerCount = (millis() - timerStartMillis ) / 1000;
-    if (timerCount > 15) {
-      prevTimerCount = timerCount;
-    }
-  } else {
-    timerCount = prevTimerCount;
-  }
-  if (timerCount > 99) {
-    return "99";
-  }
-  sprintf( outMin, "%02u", timerCount);
-  return outMin;
-}
-
-void updateDisplay() {
-  display.clearDisplay();
-  if (displayOn) {
-    if (timerStarted) {
-      display.setTextSize(7);
-      display.setCursor(25, 8);
-      display.print(getTimer());
-    } else {
-      // draw line
-      display.drawLine(74, 0, 74, 63, SSD1306_WHITE);
-      // draw time seconds
-      display.setTextSize(4);
-      display.setCursor(display.width() / 2 - 1 + 17, 20);
-      display.print(getTimer());
-      // draw machine state C/S
-      if (receivedChars[0] ) {
-        display.setTextSize(2);
-        display.setCursor(1, 1);
-        if (String(receivedChars[0]) == "C") {
-          display.print("C");
-        } else if (String(receivedChars[0]) == "V") {
-          display.print("S");
-        } else {
-          display.print("X");
-        }
-      }
-      if (String(receivedChars).substring(18, 22) == "0000") {
-        // not in boost heating mode
-        // draw fill circle if heating on
-        if (String(receivedChars[23]) == "1") {
-          display.fillCircle(45, 7, 6, SSD1306_WHITE);
-        }
-        // draw empty circle if heating off
-        if (String(receivedChars[23]) == "0") {
-          display.drawCircle(45, 7, 6, SSD1306_WHITE);
-        }
-      } else {
-        // in boost heating mode
-        // draw fill rectangle if heating on
-        if (String(receivedChars[23]) == "1") {
-          display.fillRect(39, 1, 12, 12, SSD1306_WHITE);
-        }
-        // draw empty rectangle if heating off
-        if (String(receivedChars[23]) == "0") {
-          display.drawRect(39, 1, 12, 12, SSD1306_WHITE);
-        }
-      }
-      // draw temperature
-      if (receivedChars[14] && receivedChars[15] && receivedChars[16]) {
-        display.setTextSize(3);
-        display.setCursor(1, 20);
-        if (String(receivedChars[14]) != "0") {
-          display.print(String(receivedChars[14]));
-        }
-        display.print(String(receivedChars[15]));
-        display.print(String(receivedChars[16]));
-        display.print((char)247);
-        if (String(receivedChars[14]) == "0") {
-          display.print("C");
-        }
-      }
-      // draw steam temperature
-      if (receivedChars[6] && receivedChars[7] && receivedChars[8]) {
-        display.setTextSize(2);
-        display.setCursor(1, 48);
-        if (String(receivedChars[6]) != "0") {
-          display.print(String(receivedChars[6]));
-        }
-        display.print(String(receivedChars[7]));
-        display.print(String(receivedChars[8]));
-        display.print((char)247);
-        display.print("C");
-      }
-    }
-  }
-  display.display();
-}
-
-void setup() {
-  WiFi.mode(WIFI_OFF);
-
+void setup()
+{
   Serial.begin(9600);
   mySerial.begin(9600);
 
-  pinMode(PUMP_PIN, INPUT_PULLUP);
-  pinMode(LED_BUILTIN, OUTPUT);
-  digitalWrite(LED_BUILTIN, HIGH);
-
-  t.every(100, updateDisplay);
-
-  memset(receivedChars, 0, numChars );
-
-  display.begin(SSD1306_SWITCHCAPVCC, 0x3C);
-  display.clearDisplay();
-  display.setTextColor(WHITE);
-  display.display();
-  mySerial.write(0x11);
-
-  WiFi.begin(ssid, pass);
-  while (WiFi.status() != WL_CONNECTED){
-    delay(500);
-    Serial.println(".");
+  
+  delay(10);
+  //Setup Display
+  if(!display.begin(SSD1306_SWITCHCAPVCC, SCREEN_ADDRESS))
+  {
+    Serial.println(F("SSD1306 allocation failed"));
+    for(;;); //Loop
   }
-  server.begin();
+  display.display();
+  delay(500);
+  display.clearDisplay();
+  scrollText();
 
-  server.on("/", HTTP_GET, [](){
-    server.send(200, "text/plain", "Server available");
-  });
 
-  //Print IP Adress
-  Serial.print("Use this URL to connect: ");
-  Serial.print("http://");
-  Serial.print(WiFi.localIP());
-  Serial.println("/");
+  //Setup WiFi
+   Serial.print("Connecting to ");
+  Serial.println(ssid);
+  WiFi.begin(ssid, pass);
+   while (WiFi.status() != WL_CONNECTED) {
+    delay(500);
+    Serial.print(".");
+  }
+  Serial.println("");
+  Serial.println("WiFi connected");
+  Serial.print("IP address: ");
+  Serial.println(WiFi.localIP());
+
+  //Setup serial interface
+  
+  Serial.println("Setup done");
+  
 }
 
-void loop() {
-  t.update();
-  detectChanges();
-  getMachineInput();
-  server.handleClient();
+MaraData getMaraData()
+{
+  /*
+    Example Data: C1.06,116,124,093,0840,1,0\n every ~400-500ms
+    Length: 26
+    [Pos] [Data] [Describtion]
+    0)      C     Coffee Mode (C) or SteamMode (V)
+    -        1.06  Software Version
+    1)      116   current steam temperature (Celsisus)
+    2)      124   target steam temperature (Celsisus)
+    3)      093   current hx temperature (Celsisus)
+    4)      0840  countdown for 'boost-mode'
+    5)      1     heating element on or off
+    6)      0     pump on or off
+  */
+  MaraData tmp;
+  Serial.print("Serial data avail:");
+  Serial.println(mySerial.available());
+  while (mySerial.available() >= 26)
+  {
+    serialTimeout = millis();
+    char rcv = mySerial.read();
+    if (rcv != '\n')
+    {
+      buffer[length++] = rcv;
+    }
+    else
+    {
+      //Data caught
+      length = 0;
+      Serial.println(buffer);
+      char* ptr = strtok(buffer, ",");
+      int idx = 0;
+      String data[7];
+      if (ptr != NULL)
+      { 
+          while (ptr != NULL)
+          {
+            if( idx <= 7)
+            {
+              data[idx++] = String(ptr);
+              ptr = strtok(NULL, ",");
+            }
+            else
+            {
+              break;
+            }
+          }
+          tmp.updated = true;
+          tmp.mode = data[0].substring(0,1);
+          tmp.firmware = data[0].substring(1);
+          tmp.steamTemp = data[1].toInt();
+          tmp.targetSteamTemp = data[2].toInt();
+          tmp.hxTemp = data[3].toInt();
+          tmp.boostCountdown = data[4].toInt();
+          tmp.heatState = data[5].toInt();
+          tmp.pumpState = data[6].toInt();
+          return tmp;
+      }
+    }
+  }
+    
+  //Check for timeout and reset
+  if (millis() - serialTimeout > 6000)
+  {
+    serialTimeout = millis();
+    mySerial.write(0x11);
+  }
+  return tmp;
+}
+
+
+void updateView(int hxTemp, int steamTemp, int pumpState, int heatState, String mode)
+{
+  display.clearDisplay();
+  display.setTextColor(WHITE);
+  //HX
+  display.setCursor(2, 2);
+  display.setTextSize(2);
+  display.print(hxTemp);
+  display.setTextSize(1);
+  display.print((char)247);
+  display.setTextSize(1);
+  display.print("C");
+  //Heat
+  display.setCursor(2, 30);
+  display.print("H");
+  if (heatState == 0)
+    display.drawCircle(17, 33, 6, WHITE);
+  else
+    display.fillCircle(17, 33, 5, WHITE);
+  display.setCursor(30, 30);
+  //Pump
+  display.print("P");
+  if (pumpState == 0)
+    display.drawRect(40, 28, 10, 10, WHITE);
+  else
+    display.fillRect(40, 28, 10, 10, WHITE);
+  //Steam
+  display.setCursor(2, 50);
+  display.setTextSize(2);
+  display.print(steamTemp);
+  display.setTextSize(1);
+  display.print((char)247);
+  display.setTextSize(1);
+  display.print("C");
+  display.drawLine(55, 0, 55, 68, WHITE);
+  display.setCursor(65, 15);
+  display.setTextSize(5);
+  //Timer
+  if (seconds > 3)
+  {
+    String actual = String(seconds);
+    if (actual.length()< 2)
+      actual = "0" + actual;
+    display.print(actual);
+  }
+  else if (lastSeconds > 3)
+  {
+    String last = String(lastSeconds);
+    if (last.length()< 2)
+      last = "0" + last;
+    display.print(last);
+  }
+  else
+  {
+    display.print("00");
+  }
+  //Mode
+  display.setTextSize(1);
+  display.setCursor(120, 2);
+  display.print(mode);
+  display.display();
+}
+
+void scrollText() {
+  display.clearDisplay();
+  display.setTextSize(2);
+  display.setTextColor(WHITE);
+  display.setCursor(0, 15);
+  display.println(F("Loading..."));
+  display.display();
+}
+
+void sendPushSaferMessage()
+{
+    String params = "k=" + String(API_KEY) + "&t=" + pushTitle + "&m=" + pushMessage + "&i=" + pushIcon + "&d=a";
+    Serial.print("POST Data: ");
+    Serial.println(params);
+    client.beginRequest();
+    client.post("/api");
+    client.sendHeader("Content-Type","application/x-www-form-urlencoded");
+    client.sendHeader("Content-Length", params.length());
+    client.beginBody();
+    client.print(params);
+    client.endRequest();
+
+    // Reead the status code and body of the response
+    int statusCode = client.responseStatusCode();
+    String response = client.responseBody();
+    Serial.print("Status code: ");
+    Serial.println(statusCode);
+    Serial.print("Response: ");
+}
+
+
+void loop()
+{
+  //Collect data
+  MaraData data = getMaraData();
+  if (data.updated == true)
+  {
+    //Check if machine is ready
+    if (data.steamTemp == data.targetSteamTemp && data.hxTemp > 90 && initialPushSent == false)
+    {
+        sendPushSaferMessage();
+        initialPushSent = true; 
+    }
+    
+    //Run Timer
+    if (data.pumpState == 1)
+    {
+      if ( millis() - lastMillis >= 1000)
+      {
+        lastMillis = millis();
+        ++seconds;
+        if (seconds > 99)
+          seconds = 0;
+      }
+    }
+    else
+    {
+      if (seconds != 0)
+        lastSeconds = seconds;
+      seconds = 0;
+    }
+    updateView(data.hxTemp, data.steamTemp, data.pumpState, data.heatState, data.mode);
+  }
+  
 }

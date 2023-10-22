@@ -1,0 +1,3 @@
+#define WLAN_SSID "FRITZ!Box 7590 ZR"
+#define WLAN_PASS "ELATANT117DUUSIMAUM"
+#define API_KEY "testkey"
