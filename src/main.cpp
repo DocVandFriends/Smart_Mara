@@ -107,7 +107,7 @@ MaraData getMaraData()
   /*
     Example Data: C1.06,116,124,093,0840,1,0\n every ~400-500ms
     Length: 26
-    [Pos] [Data] [Describtion]
+    [Pos] [Data] [Description]
     0)      C     Coffee Mode (C) or SteamMode (V)
     -        1.06  Software Version
     1)      116   current steam temperature (Celsisus)
