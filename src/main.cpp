@@ -22,6 +22,7 @@ const int mqtt_port = 1883;
 void updateView(int hxTemp, int steamTemp, int pumpState, int heatState, String mode);
 void scrollText();
 void mqttReconnect();
+void mqttSend(MaraData);
 
 
 //Secrets from secrets.h
@@ -70,15 +71,6 @@ struct MaraData {
   int boostCountdown;
   int pumpState;
   int heatState;
-};
-
-//Data strings
-struct MaraDataString {
-  String mode_str;
-  String hxTemp_str;
-  String steamTemp_str;
-  String pumpState_str;
-  String heatState_str;
 };
 
 
@@ -160,11 +152,7 @@ void loop()
       seconds = 0;
     }
     updateView(data.hxTemp, data.steamTemp, data.pumpState, data.heatState, data.mode);
-    mqtt_client.publish("Mara_HeatState", data.heatState);
-    mqtt_client.publish("Mara_PumpState", data.pumpState);
-    mqtt_client.publish("Mara_Mode", data.mode);
-    mqtt_client.publish("Mara_SteamTemp", data.steamTemp);
-    mqtt_client.publish("Mara_HXTemp", data.hxTemp);
+    mqttSend(data);
   }
 }
 
@@ -350,23 +338,16 @@ void mqttReconnect() {
   }
 }
 
-MaraDataString MaraDataTransformation(MaraData data) {
-  MaraDataString tmp;
+void mqttSend(const MaraData& data, PubSubClient& mqtt_client, const char* mqtt_topic) {
+  String hxTempStr = String(data.hxTemp);
+  String stmTempStr = String(data.steamTemp);
+  String heatStr = data.heatState ? "true" : "false";
+  String pumpStr = data.pumpState ? "true" : "false";
+  String modeStr = data.mode;
 
-  tmp.mode_str = data.mode;
-  
-  if (data.heatState == 1) {
-    tmp.heatState_str = "ON";
-  } else {
-    tmp.heatState_str == "OFF";
-  }
-
-  if (data.pumpState == 1) {
-    tmp.pumpState_str = "ON";
-  } else {
-    tmp.pumpState_str = "OFF";
-  }
-
-  dtostrf(data.hxTemp, 3, 2, tmp.hxTemp_str);
-  dtostrf(data.steamTemp, 3, 2, tmp.steamTemp_str);
+  mqtt_client.publish("Mara/HXTemp", hxTempStr.c_str());
+  mqtt_client.publish("Mara/SteamTemp", stmTempStr.c_str());
+  mqtt_client.publish("Mara/HeatState", heatStr.c_str());
+  mqtt_client.publish("Mara/PumpState", pumpStr.c_str());
+  mqtt_client.publish("Mara/Mode", modeStr.c_str());  
 }
