@@ -18,13 +18,6 @@
 const int mqtt_port = 1883;
 
 
-//function prototypes
-void updateView(int hxTemp, int steamTemp, int pumpState, int heatState, String mode);
-void scrollText();
-void mqttReconnect();
-void mqttSend(MaraData);
-
-
 //Secrets from secrets.h
 //Will not be pushed into the repo you have to create the file by yourself
 String ssid = WLAN_SSID;
@@ -72,6 +65,15 @@ struct MaraData {
   int pumpState;
   int heatState;
 };
+
+
+//function prototypes
+MaraData getMaraData();
+void updateView(int hxTemp, int steamTemp, int pumpState, int heatState, String mode);
+void scrollText();
+void mqttReconnect();
+void mqttSend(const MaraData& data, PubSubClient& mqtt_client);
+void sendPushSaferMessage();
 
 
 void setup()
@@ -152,7 +154,7 @@ void loop()
       seconds = 0;
     }
     updateView(data.hxTemp, data.steamTemp, data.pumpState, data.heatState, data.mode);
-    mqttSend(data);
+    mqttSend(data, mqtt_client);
   }
 }
 
@@ -338,11 +340,11 @@ void mqttReconnect() {
   }
 }
 
-void mqttSend(const MaraData& data, PubSubClient& mqtt_client, const char* mqtt_topic) {
+void mqttSend(const MaraData& data, PubSubClient& mqtt_client) {
   String hxTempStr = String(data.hxTemp);
   String stmTempStr = String(data.steamTemp);
-  String heatStr = data.heatState ? "true" : "false";
-  String pumpStr = data.pumpState ? "true" : "false";
+  String heatStr = String(data.heatState);
+  String pumpStr = String(data.pumpState);
   String modeStr = data.mode;
 
   mqtt_client.publish("Mara/HXTemp", hxTempStr.c_str());
