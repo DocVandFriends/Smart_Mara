@@ -7,6 +7,7 @@
 #include <Adafruit_GFX.h>
 #include <Adafruit_SSD1306.h>
 #include <Wire.h>
+#include <PubSubClient.h>
 
 //Defines
 #define SCREEN_WIDTH    128     //Width in px 
@@ -14,10 +15,13 @@
 #define OLED_RESET      -1
 #define SCREEN_ADDRESS  0x3C    // or 0x3D Check datasheet or Oled Display
 #define BUFFER_SIZE     32
+const int mqtt_port = 1883;
+
 
 //function prototypes
 void updateView(int hxTemp, int steamTemp, int pumpState, int heatState, String mode);
 void scrollText();
+void mqttReconnect();
 
 
 //Secrets from secrets.h
@@ -27,6 +31,10 @@ String pass = WLAN_PASS;
 String apiKey = API_KEY;
 String pushServiceHost = "pushsafer.com";
 int pushServicePort = 80;
+const char* mqtt_ip = MQTT_BROKER_IP;
+const char* mqtt_topic = MQTT_TOPIC;
+
+
 
 //Instances
 WiFiClient wifi;
@@ -35,6 +43,7 @@ Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, OLED_RESET);
 //orange PIN 4 Mara TX to Arduino RX D5
 //black  PIN 3 Mara RX to Arduino TX D6
 SoftwareSerial mySerial(D5, D6);
+PubSubClient mqtt_client(wifi);
 
 
 //Internals
@@ -61,6 +70,15 @@ struct MaraData {
   int boostCountdown;
   int pumpState;
   int heatState;
+};
+
+//Data strings
+struct MaraDataString {
+  String mode_str;
+  String hxTemp_str;
+  String steamTemp_str;
+  String pumpState_str;
+  String heatState_str;
 };
 
 
@@ -99,8 +117,57 @@ void setup()
   //Setup serial interface
   
   Serial.println("Setup done");
+
+  // Setup MQTT connection
+  mqtt_client.setServer(mqtt_ip, mqtt_port);
   
 }
+
+
+void loop()
+{
+  if (!mqtt_client.connected()) {
+    mqttReconnect();
+  }
+  mqtt_client.loop();
+
+  //Collect data
+  MaraData data = getMaraData();
+  if (data.updated == true)
+  {
+    //Check if machine is ready
+    if (data.steamTemp == data.targetSteamTemp && data.hxTemp > 90 && initialPushSent == false)
+    {
+        sendPushSaferMessage();
+        initialPushSent = true; 
+    }
+    
+    //Run Timer
+    if (data.pumpState == 1)
+    {
+      if ( millis() - lastMillis >= 1000)
+      {
+        lastMillis = millis();
+        ++seconds;
+        if (seconds > 99)
+          seconds = 0;
+      }
+    }
+    else
+    {
+      if (seconds != 0)
+        lastSeconds = seconds;
+      seconds = 0;
+    }
+    updateView(data.hxTemp, data.steamTemp, data.pumpState, data.heatState, data.mode);
+    mqtt_client.publish("Mara_HeatState", data.heatState);
+    mqtt_client.publish("Mara_PumpState", data.pumpState);
+    mqtt_client.publish("Mara_Mode", data.mode);
+    mqtt_client.publish("Mara_SteamTemp", data.steamTemp);
+    mqtt_client.publish("Mara_HXTemp", data.hxTemp);
+  }
+}
+
 
 MaraData getMaraData()
 {
@@ -268,37 +335,38 @@ void sendPushSaferMessage()
 }
 
 
-void loop()
-{
-  //Collect data
-  MaraData data = getMaraData();
-  if (data.updated == true)
-  {
-    //Check if machine is ready
-    if (data.steamTemp == data.targetSteamTemp && data.hxTemp > 90 && initialPushSent == false)
-    {
-        sendPushSaferMessage();
-        initialPushSent = true; 
+
+void mqttReconnect() {
+  while (!mqtt_client.connected()) {
+    Serial.println("Attempting to connect to MQTT broker...");
+    if (mqtt_client.connect("ESP8266Client")) {
+      Serial.println("Connected to MQTT broker.");
+    } else {
+      Serial.print("Connection failed, rc= ");
+      Serial.print(mqtt_client.state());
+      Serial.println(" try again in 5 seconds");
+      delay(5000);
     }
-    
-    //Run Timer
-    if (data.pumpState == 1)
-    {
-      if ( millis() - lastMillis >= 1000)
-      {
-        lastMillis = millis();
-        ++seconds;
-        if (seconds > 99)
-          seconds = 0;
-      }
-    }
-    else
-    {
-      if (seconds != 0)
-        lastSeconds = seconds;
-      seconds = 0;
-    }
-    updateView(data.hxTemp, data.steamTemp, data.pumpState, data.heatState, data.mode);
   }
+}
+
+MaraDataString MaraDataTransformation(MaraData data) {
+  MaraDataString tmp;
+
+  tmp.mode_str = data.mode;
   
+  if (data.heatState == 1) {
+    tmp.heatState_str = "ON";
+  } else {
+    tmp.heatState_str == "OFF";
+  }
+
+  if (data.pumpState == 1) {
+    tmp.pumpState_str = "ON";
+  } else {
+    tmp.pumpState_str = "OFF";
+  }
+
+  dtostrf(data.hxTemp, 3, 2, tmp.hxTemp_str);
+  dtostrf(data.steamTemp, 3, 2, tmp.steamTemp_str);
 }
